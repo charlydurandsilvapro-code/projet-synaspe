@@ -1,0 +1,185 @@
+/* 
+  Localizable.strings (French)
+  Synapse - Montage Vidéo IA
+*/
+
+// MARK: - Application
+"app.name" = "Synapse";
+"app.tagline" = "Montage Vidéo Alimenté par l'IA";
+"app.description" = "Créez de superbes montages vidéo synchronisés à la musique avec une IA avancée";
+
+// MARK: - Interface Principale
+"welcome.title" = "Bienvenue dans Synapse";
+"welcome.subtitle" = "Votre assistant IA pour le montage vidéo";
+"welcome.description" = "Glissez vos vidéos et votre musique pour commencer";
+
+// MARK: - Boutons d'Action
+"button.choose_videos" = "Choisir Vidéos";
+"button.choose_music" = "Choisir Musique";
+"button.generate_timeline" = "Générer Timeline";
+"button.export" = "Exporter";
+"button.preview" = "Aperçu";
+"button.play" = "Lecture";
+"button.pause" = "Pause";
+"button.stop" = "Arrêt";
+
+// MARK: - Sidebar
+"sidebar.project" = "Projet";
+"sidebar.media" = "Médias";
+"sidebar.effects" = "Effets";
+"sidebar.settings" = "Réglages";
+
+// MARK: - Statistiques Projet
+"stats.segments" = "Segments";
+"stats.duration" = "Durée";
+"stats.quality" = "Qualité";
+"stats.files" = "Fichiers";
+
+// MARK: - Actions Rapides
+"quick_actions.title" = "Actions Rapides";
+"quick_actions.auto_fill" = "Remplissage Auto";
+"quick_actions.optimize" = "Optimiser Plateforme";
+"quick_actions.refresh" = "Actualiser Vignettes";
+
+// MARK: - Profils Couleur
+"color_profile.title" = "Profil Couleur";
+"color_profile.cinematic" = "Cinématique";
+"color_profile.cinematic.desc" = "Tons chauds, aspect film";
+"color_profile.vivid" = "Vif";
+"color_profile.vivid.desc" = "Couleurs rehaussées";
+"color_profile.bw" = "N&B";
+"color_profile.bw.desc" = "Monochrome classique";
+
+// MARK: - Ratios d'Aspect
+"aspect_ratio.title" = "Ratio d'Aspect";
+"aspect_ratio.portrait" = "9:16 Portrait";
+"aspect_ratio.portrait.desc" = "TikTok, Instagram";
+"aspect_ratio.landscape" = "16:9 Paysage";
+"aspect_ratio.landscape.desc" = "YouTube, Desktop";
+"aspect_ratio.square" = "1:1 Carré";
+"aspect_ratio.square.desc" = "Post Instagram";
+
+// MARK: - Fonctionnalités IA
+"ai.title" = "Fonctionnalités IA";
+"ai.smart_features" = "Fonctions Intelligentes";
+"ai.smart_features.desc" = "Active l'analyse IA avancée pour de meilleurs résultats";
+"ai.voice_detection" = "Détection Vocale";
+"ai.moment_detection" = "Détection Moments";
+"ai.auto_sync" = "Sync Automatique";
+
+// MARK: - Plateformes
+"platform.title" = "Plateforme Cible";
+"platform.instagram" = "Instagram";
+"platform.tiktok" = "TikTok";
+"platform.youtube" = "YouTube";
+"platform.facebook" = "Facebook";
+
+// MARK: - Timeline
+"timeline.title" = "Timeline";
+"timeline.zoom_in" = "Zoom Avant";
+"timeline.zoom_out" = "Zoom Arrière";
+"timeline.fit_window" = "Ajuster Fenêtre";
+"timeline.segment" = "Segment";
+"timeline.transition" = "Transition";
+
+// MARK: - Lecteur Vidéo
+"player.play" = "Lecture";
+"player.pause" = "Pause";
+"player.skip_back" = "Reculer 5s";
+"player.skip_forward" = "Avancer 5s";
+"player.volume" = "Volume";
+"player.mute" = "Muet";
+"player.fullscreen" = "Plein Écran";
+
+// MARK: - Import/Export
+"import.drag_drop" = "Glissez vos fichiers ici";
+"import.supported_formats" = "Formats supportés : MP4, MOV, ProRes, MP3, WAV";
+"export.quality.1080p" = "1080p HD";
+"export.quality.4k" = "4K Ultra HD";
+"export.format.mp4" = "MP4 (Recommandé)";
+"export.format.mov" = "MOV (Apple)";
+"export.format.prores" = "ProRes (Pro)";
+
+// MARK: - Messages de Statut
+"status.analyzing" = "Analyse en cours...";
+"status.generating" = "Génération de la timeline...";
+"status.rendering" = "Rendu vidéo...";
+"status.exporting" = "Export en cours...";
+"status.complete" = "Terminé !";
+"status.error" = "Erreur";
+
+// MARK: - Erreurs
+"error.no_video" = "Aucune vidéo sélectionnée";
+"error.no_audio" = "Aucune musique sélectionnée";
+"error.analysis_failed" = "Échec de l'analyse";
+"error.export_failed" = "Échec de l'export";
+"error.unsupported_format" = "Format non supporté";
+
+// MARK: - Tooltips
+"tooltip.smart_features" = "Active l'analyse IA pour de meilleurs résultats";
+"tooltip.voice_detection" = "Évite les coupures au milieu des dialogues";
+"tooltip.auto_fill" = "Complète automatiquement votre timeline";
+"tooltip.optimize" = "Optimise pour la plateforme sélectionnée";
+
+// MARK: - Menu
+"menu.file" = "Fichier";
+"menu.edit" = "Édition";
+"menu.view" = "Affichage";
+"menu.window" = "Fenêtre";
+"menu.help" = "Aide";
+
+"menu.new_project" = "Nouveau Projet";
+"menu.open_project" = "Ouvrir Projet";
+"menu.save_project" = "Enregistrer Projet";
+"menu.import_media" = "Importer Médias";
+
+// MARK: - Raccourcis Clavier
+"shortcut.play_pause" = "Espace : Lecture/Pause";
+"shortcut.skip_back" = "← : Reculer 5s";
+"shortcut.skip_forward" = "→ : Avancer 5s";
+"shortcut.zoom_in" = "⌘+ : Zoom Avant";
+"shortcut.zoom_out" = "⌘- : Zoom Arrière";
+
+// MARK: - À Propos
+"about.version" = "Version";
+"about.build" = "Build";
+"about.copyright" = "© 2024 Synapse. Tous droits réservés.";
+"about.description" = "Application de montage vidéo alimentée par l'intelligence artificielle pour macOS.";
+
+// MARK: - Préférences
+"preferences.general" = "Général";
+"preferences.performance" = "Performance";
+"preferences.advanced" = "Avancé";
+"preferences.language" = "Langue";
+"preferences.theme" = "Thème";
+"preferences.auto_save" = "Sauvegarde Automatique";
+
+// MARK: - Performance
+"performance.gpu_acceleration" = "Accélération GPU";
+"performance.memory_usage" = "Utilisation Mémoire";
+"performance.cache_size" = "Taille Cache";
+"performance.preview_quality" = "Qualité Aperçu";
+
+// MARK: - Formats de Temps
+"time.seconds" = "secondes";
+"time.minutes" = "minutes";
+"time.hours" = "heures";
+"time.fps" = "fps";
+
+// MARK: - Unités
+"unit.mb" = "Mo";
+"unit.gb" = "Go";
+"unit.percent" = "%";
+"unit.hz" = "Hz";
+"unit.khz" = "kHz";
+
+// MARK: - Tags Automatiques
+"tag.highlight" = "moment fort";
+"tag.face" = "visage";
+"tag.smile" = "sourire";
+"tag.action" = "action";
+"tag.calm" = "calme";
+"tag.voice" = "voix";
+"tag.music" = "musique";
+"tag.low_light" = "faible éclairage";
+"tag.high_quality" = "haute qualité";
