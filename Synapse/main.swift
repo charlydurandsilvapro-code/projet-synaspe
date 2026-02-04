@@ -1,6 +1,11 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+// MARK: - Notifications
+extension Notification.Name {
+    static let openAutoDerush = Notification.Name("openAutoDerush")
+}
+
 @available(macOS 14.0, *)
 struct SynapseApp: App {
     var body: some Scene {
@@ -19,6 +24,7 @@ struct ContentView: View {
     @StateObject private var viewModel = ProjectViewModel()
     @State private var showingExportDialog = false
     @State private var selectedTab: MainTab = .timeline
+    @State private var showingAutoDerush = false
     
     enum MainTab: String, CaseIterable {
         case timeline = "Timeline"
@@ -47,10 +53,20 @@ struct ContentView: View {
             } else if viewModel.project.timeline.isEmpty {
                 WelcomeView(viewModel: viewModel)
             } else {
-                ProfessionalWorkspaceView(viewModel: viewModel, selectedTab: $selectedTab)
+                ProfessionalWorkspaceView(
+                    viewModel: viewModel, 
+                    selectedTab: $selectedTab
+                )
             }
         }
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $showingAutoDerush) {
+            AutoDerushView()
+                .frame(minWidth: 1200, minHeight: 800)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openAutoDerush)) { _ in
+            showingAutoDerush = true
+        }
         .fileExporter(
             isPresented: $showingExportDialog,
             document: TextDocument(text: ""),
@@ -214,6 +230,41 @@ struct WelcomeView: View {
                         }
                         .scaleEffect(1.05)
                         .animation(.spring(response: 0.5), value: !viewModel.videoURLs.isEmpty && viewModel.audioURL != nil)
+                    } else {
+                        // Demo Mode Button
+                        VStack(spacing: 12) {
+                            Text("Mode Démonstration")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            
+                            VStack(spacing: 8) {
+                                ModernActionButton(
+                                    title: "Démo Auto-Rush",
+                                    icon: "play.circle",
+                                    color: .orange,
+                                    isPrimary: true,
+                                    action: {
+                                        Task {
+                                            await viewModel.runDemoMode()
+                                        }
+                                    }
+                                )
+                                .help("Démonstration avec des données simulées")
+                                
+                                ModernActionButton(
+                                    title: "Auto-Dérush",
+                                    icon: "scissors.badge.ellipsis",
+                                    color: .cyan,
+                                    action: {
+                                        // Ouvrir l'auto-dérush via une notification
+                                        NotificationCenter.default.post(name: .openAutoDerush, object: nil)
+                                    }
+                                )
+                                .help("Ouvrir l'interface d'auto-dérush")
+                            }
+                        }
+                        .scaleEffect(1.05)
+                        .animation(.spring(response: 0.5), value: viewModel.videoURLs.isEmpty || viewModel.audioURL == nil)
                     }
                 }
             }
@@ -298,19 +349,22 @@ struct ProfessionalWorkspaceView: View {
                             VideoPreviewArea(viewModel: viewModel)
                                 .frame(height: contentGeometry.size.height * 0.6)
                             
-                            // Timeline Area (40% of height)
-                            ModernTimelineView(viewModel: viewModel)
-                                .frame(height: contentGeometry.size.height * 0.4)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 0)
-                                        .fill(Color(red: 0.08, green: 0.08, blue: 0.09))
-                                        .overlay(
-                                            Rectangle()
-                                                .fill(Color.white.opacity(0.1))
-                                                .frame(height: 1),
-                                            alignment: .top
-                                        )
-                                )
+                            // Nouvelle Timeline Magnétique (40% of height)
+                            MagneticTimelineView(
+                                engine: viewModel.timelineEngine,
+                                thumbnails: viewModel.thumbnails
+                            )
+                            .frame(height: contentGeometry.size.height * 0.4)
+                            .background(
+                                RoundedRectangle(cornerRadius: 0)
+                                    .fill(Color(red: 0.08, green: 0.08, blue: 0.09))
+                                    .overlay(
+                                        Rectangle()
+                                            .fill(Color.white.opacity(0.1))
+                                            .frame(height: 1),
+                                        alignment: .top
+                                    )
+                            )
                         }
                     }
                 }

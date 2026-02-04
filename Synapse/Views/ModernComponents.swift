@@ -281,6 +281,15 @@ struct ProjectSectionView: View {
                         }
                     )
                 }
+                
+                ModernActionButton(
+                    title: "Auto-Dérush",
+                    icon: "scissors.badge.ellipsis",
+                    color: .cyan,
+                    action: {
+                        NotificationCenter.default.post(name: .openAutoDerush, object: nil)
+                    }
+                )
             }
         }
     }

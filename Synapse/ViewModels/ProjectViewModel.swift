@@ -16,10 +16,13 @@ class ProjectViewModel: ObservableObject {
     @Published var selectedPlatform: SocialPlatform = .instagram
     @Published var timelineResult: TimelineResult?
     
-    // Nouveaux services d'IA
-    private let audioAnalysisEngine = AudioAnalysisEngine()
-    private let smartCutEngine = SmartCutEngine()
-    private let autoRushEngine = AutoRushEngine()
+    // Nouveau moteur de timeline magnétique
+    let timelineEngine = TimelineEngine()
+    
+    // Nouveaux services d'IA simplifiés
+    private let audioAnalysisEngine = SimplifiedAudioAnalysisEngine()
+    private let smartCutEngine = SimplifiedSmartCutEngine()
+    private let autoRushEngine = SimplifiedAutoRushEngine()
     
     // Services simulés pour la compatibilité
     private let neuralIngestor = MockNeuralIngestor()
@@ -143,6 +146,9 @@ class ProjectViewModel: ObservableObject {
                 project.timeline = timeline
             }
             
+            // Synchroniser avec le moteur de timeline magnétique
+            syncToTimelineEngine()
+            
             project.modifiedAt = Date()
             
             processingStatus = "Génération des vignettes..."
@@ -249,8 +255,9 @@ class ProjectViewModel: ObservableObject {
                 platform: selectedPlatform
             )
             
-            project.timeline = smartCuts
-            project.modifiedAt = Date()
+            // Synchroniser avec le moteur de timeline magnétique
+            syncToTimelineEngine()
+            
             await generateThumbnails()
             
         } catch {
@@ -264,7 +271,131 @@ class ProjectViewModel: ObservableObject {
         }
     }
     
-    // MARK: - Configuration des préférences d'auto-rush
+    // MARK: - Timeline Engine Synchronization
+    
+    /// Synchronise les segments du projet avec le moteur de timeline magnétique
+    func syncToTimelineEngine() {
+        timelineEngine.segments = project.timeline
+    }
+    
+    /// Synchronise les segments du moteur vers le projet
+    func syncFromTimelineEngine() {
+        project.timeline = timelineEngine.segments
+        project.modifiedAt = Date()sProcessing = false
+        if processingStatus.contains("Erreur") == false {
+            processingStatus = ""
+        }
+    }
+    
+    // MARK: - Mode Démonstration
+    func runDemoMode() async {
+        isProcessing = true
+        processingStatus = "Initialisation du mode démo..."
+        
+        // Simulation de fichiers vidéo et audio
+        let demoVideoURL = URL(fileURLWithPath: "/demo/video1.mp4")
+        let demoAudioURL = URL(fileURLWithPath: "/demo/music.mp3")
+        
+        videoURLs = [demoVideoURL]
+        audioURL = demoAudioURL
+        
+        do {
+            processingStatus = "Génération de données de démonstration..."
+            try await Task.sleep(nanoseconds: 1_000_000_000) // 1 seconde
+            
+            // Génération de segments de démonstration
+            var demoSegments: [VideoSegment] = []
+            
+            for i in 0..<6 {
+                let startTime = Double(i) * 3.0
+                let segment = VideoSegment(
+                    sourceURL: demoVideoURL,
+                    timeRange: CMTimeRangeMake(
+                        start: CMTime(seconds: startTime, preferredTimescale: 600),
+                        duration: CMTime(seconds: 3.0, preferredTimescale: 600)
+                    ),
+                    qualityScore: Float.random(in: 0.6...0.95),
+                    tags: ["demo", "qualité_\(Int.random(in: 70...95))", "auto_généré"],
+                    saliencyCenter: CGPoint(
+                        x: Double.random(in: 0.3...0.7),
+                        y: Double.random(in: 0.3...0.7)
+                    )
+                )
+                demoSegments.append(segment)
+            }
+            
+            previewSegments = demoSegments
+            
+            processingStatus = "Analyse audio de démonstration..."
+            try await Task.sleep(nanoseconds: 800_000_000) // 0.8 secondes
+            
+            // Génération d'analyse audio de démo
+            detailedAudioAnalysis = try await audioAnalysisEngine.analyzeAudio(from: demoAudioURL)
+            
+            if let analysis = detailedAudioAnalysis {
+                project.musicTrack = AudioTrack(
+                    url: analysis.url,
+                    bpm: analysis.bpm,
+                    beatGrid: analysis.beatGrid,
+                    energyProfile: analysis.energyProfile
+                )
+            }
+            
+            processingStatus = "Auto-rush intelligent en cours..."
+            try await Task.sleep(nanoseconds: 1_200_000_000) // 1.2 secondes
+            
+            // Exécution de l'auto-rush
+            if let analysis = detailedAudioAnalysis {
+                let smartCuts = try await smartCutEngine.generateSmartCuts(
+                    for: previewSegments,
+                    with: analysis,
+                    targetDuration: selectedPlatform.idealDuration,
+                    platform: selectedPlatform
+                )
+                
+                project.timeline = smartCuts
+                project.modifiedAt = Date()
+                
+                // Génération des thumbnails
+                await generateThumbnails()
+                
+                processingStatus = "Démo terminée avec succès!"
+                
+                // Simulation d'un résultat d'auto-rush
+                autoRushResult = AutoRushResult(
+                    timeline: smartCuts,
+                    audioAnalysis: analysis,
+                    metadata: RushMetadata(
+                        totalOriginalDuration: Double(demoSegments.count) * 3.0,
+                        finalTimelineDuration: smartCuts.reduce(0) { $0 + $1.timeRange.duration.seconds },
+                        compressionRatio: Float(smartCuts.count) / Float(demoSegments.count),
+                        averageQuality: smartCuts.map { $0.qualityScore }.reduce(0, +) / Float(max(smartCuts.count, 1)),
+                        bpmSync: analysis.bpm,
+                        energyProfile: analysis.energyProfile.map { $0.level },
+                        processingTime: Date(),
+                        preferences: rushPreferences
+                    ),
+                    confidence: 0.87,
+                    suggestions: [
+                        "Excellente synchronisation avec la musique",
+                        "Qualité vidéo optimale détectée",
+                        "Timeline équilibrée générée"
+                    ]
+                )
+            }
+            
+        } catch {
+            processingStatus = "Erreur de démonstration: \(error.localizedDescription)"
+        }
+        
+        // Nettoyage après 3 secondes
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            if !self.processingStatus.contains("Erreur") {
+                self.isProcessing = false
+                self.processingStatus = ""
+            }
+        }
+    }
     func updateRushPreferences(
         highlightThreshold: Float? = nil,
         preferFaces: Bool? = nil,
