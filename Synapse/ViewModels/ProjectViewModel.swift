@@ -19,15 +19,14 @@ class ProjectViewModel: ObservableObject {
     // Nouveau moteur de timeline magnétique
     let timelineEngine = TimelineEngine()
     
-    // Nouveaux services d'IA simplifiés
-    private let audioAnalysisEngine = SimplifiedAudioAnalysisEngine()
-    private let smartCutEngine = SimplifiedSmartCutEngine()
-    private let autoRushEngine = SimplifiedAutoRushEngine()
+    // Gestion des Security Scoped Resources pour macOS sandboxing
+    private var accessedURLs: Set<URL> = []
     
-    // Services simulés pour la compatibilité
+    // VRAI MOTEUR NEURAL - Architecture complète avec pipeline FFT + VAD + Beat Detection
+    private let neuralAdapter = NeuralAutoCutAdapter()
+    
+    // Services Mock conservés uniquement pour analyzeVideos (segments preview)
     private let neuralIngestor = MockNeuralIngestor()
-    private let audioBrain = MockAudioBrain()
-    private let montageDirector = MockMontageDirector()
     
     // Résultats d'analyse détaillés
     @Published var detailedAudioAnalysis: DetailedAudioAnalysis?
@@ -38,12 +37,31 @@ class ProjectViewModel: ObservableObject {
         self.project = ProjectState()
     }
     
+    deinit {
+        // Libération des Security Scoped Resources
+        for url in accessedURLs {
+            url.stopAccessingSecurityScopedResource()
+        }
+    }
+    
     func addVideos(_ urls: [URL]) async {
+        // Gestion des permissions sandboxing macOS
+        for url in urls {
+            if url.startAccessingSecurityScopedResource() {
+                accessedURLs.insert(url)
+            }
+        }
+        
         videoURLs.append(contentsOf: urls)
         await analyzeVideos(urls)
     }
     
     func addAudio(_ url: URL) async {
+        // Gestion des permissions sandboxing macOS
+        if url.startAccessingSecurityScopedResource() {
+            accessedURLs.insert(url)
+        }
+        
         audioURL = url
         await analyzeAudio(url)
     }
@@ -74,30 +92,22 @@ class ProjectViewModel: ObservableObject {
     
     private func analyzeAudio(_ url: URL) async {
         isProcessing = true
-        processingStatus = "Analyse audio avancée en cours..."
+        processingStatus = "Analyse audio (Neural Pipeline)..."
         
         do {
-            // Utilisation du nouveau moteur d'analyse audio
-            if enableSmartFeatures {
-                detailedAudioAnalysis = try await audioAnalysisEngine.analyzeAudio(from: url)
-                
-                // Conversion vers l'ancien format pour compatibilité
-                if let detailed = detailedAudioAnalysis {
-                    project.musicTrack = AudioTrack(
-                        url: detailed.url,
-                        bpm: detailed.bpm,
-                        beatGrid: detailed.beatGrid,
-                        energyProfile: detailed.energyProfile
-                    )
-                }
-            } else {
-                // Fallback vers l'ancienne méthode
-                let audioTrack = try await audioBrain.analyzeAudio(url: url)
-                project.musicTrack = audioTrack
-            }
+            // VRAI PIPELINE: PCM Extraction -> FFT -> RMS -> Beat Detection
+            let analysis = try await neuralAdapter.analyzeAudio(url: url)
             
-            // Simulation d'un délai
-            try await Task.sleep(nanoseconds: 1_500_000_000) // 1.5 secondes
+            detailedAudioAnalysis = analysis
+            project.musicTrack = AudioTrack(
+                url: analysis.url,
+                bpm: analysis.bpm,
+                beatGrid: analysis.beatGrid,
+                energyProfile: analysis.energyProfile
+            )
+            
+            project.modifiedAt = Date()
+            processingStatus = "Analyse audio terminée (BPM: \(Int(analysis.bpm)))"
         } catch {
             print("Failed to analyze audio: \(error)")
             processingStatus = "Erreur d'analyse audio: \(error.localizedDescription)"
@@ -110,7 +120,7 @@ class ProjectViewModel: ObservableObject {
     }
     
     func generateTimeline() async {
-        guard let musicTrack = project.musicTrack else {
+        guard project.musicTrack != nil else {
             print("No music track available")
             return
         }
@@ -124,26 +134,31 @@ class ProjectViewModel: ObservableObject {
         processingStatus = "Génération de la timeline intelligente..."
         
         do {
-            if enableSmartFeatures, let detailedAnalysis = detailedAudioAnalysis {
-                // Utilisation du nouveau système d'auto-cut intelligent
-                let smartCuts = try await smartCutEngine.generateSmartCuts(
-                    for: previewSegments,
-                    with: detailedAnalysis,
-                    targetDuration: selectedPlatform.idealDuration,
-                    platform: selectedPlatform
+            // VRAI MOTEUR NEURAL: Dérush intelligent avec VAD + Beat Sync
+            if !videoURLs.isEmpty {
+                processingStatus = "Traitement Neural (Dérush + Beat Sync)..."
+                
+                let config = SimplifiedDerushConfig(
+                    silenceThreshold: -45.0,
+                    minSilenceDuration: 0.5,
+                    paddingBefore: 0.15,
+                    paddingAfter: 0.2,
+                    enableBeatSync: enableSmartFeatures,
+                    enableSceneDetection: enableSmartFeatures
+                )
+                
+                let smartCuts = try await neuralAdapter.processVideo(
+                    url: videoURLs[0],
+                    silenceThreshold: config.silenceThreshold,
+                    minSilenceDuration: config.minSilenceDuration,
+                    paddingBefore: config.paddingBefore,
+                    paddingAfter: config.paddingAfter,
+                    enableBeatSync: config.enableBeatSync,
+                    enableSceneDetection: config.enableSceneDetection
                 )
                 
                 project.timeline = smartCuts
-            } else {
-                // Fallback vers l'ancienne méthode
-                try await Task.sleep(nanoseconds: 2_000_000_000) // 2 secondes
-                
-                let timeline = try await montageDirector.generateTimeline(
-                    videoSegments: previewSegments,
-                    audioTrack: musicTrack
-                )
-                
-                project.timeline = timeline
+                processingStatus = "Timeline générée (\(smartCuts.count) segments)"
             }
             
             // Synchroniser avec le moteur de timeline magnétique
@@ -170,48 +185,40 @@ class ProjectViewModel: ObservableObject {
     
     // MARK: - Nouvelle méthode d'auto-rush intelligente
     func performIntelligentAutoRush() async {
-        guard !videoURLs.isEmpty, let audioURL = audioURL else {
+        guard !videoURLs.isEmpty, let _ = audioURL else {
             processingStatus = "Vidéos et audio requis pour l'auto-rush"
             return
         }
         
         isProcessing = true
-        processingStatus = "Démarrage de l'auto-rush intelligent..."
+        processingStatus = "Auto-Rush Neural (Dérush + Beat Sync)..."
         
         do {
-            autoRushResult = try await autoRushEngine.performAutoRush(
-                videoURLs: videoURLs,
-                audioURL: audioURL,
-                targetDuration: selectedPlatform.idealDuration,
-                platform: selectedPlatform,
-                preferences: rushPreferences
+            // Configuration avancée pour auto-rush (basée sur qualityPriority)
+            let config = rushPreferences.qualityPriority > 0.8 ? 
+                SimplifiedDerushConfig.aggressive : SimplifiedDerushConfig.balanced
+            
+            let timeline = try await neuralAdapter.processVideo(
+                url: videoURLs[0],
+                silenceThreshold: config.silenceThreshold,
+                minSilenceDuration: config.minSilenceDuration,
+                paddingBefore: config.paddingBefore,
+                paddingAfter: config.paddingAfter,
+                enableBeatSync: true,
+                enableSceneDetection: true
             )
             
-            if let result = autoRushResult {
-                // Mise à jour du projet avec les résultats
-                project.timeline = result.timeline
-                detailedAudioAnalysis = result.audioAnalysis
-                project.musicTrack = AudioTrack(
-                    url: result.audioAnalysis.url,
-                    bpm: result.audioAnalysis.bpm,
-                    beatGrid: result.audioAnalysis.beatGrid,
-                    energyProfile: result.audioAnalysis.energyProfile
-                )
-                project.modifiedAt = Date()
-                
-                // Génération des thumbnails
-                await generateThumbnails()
-                
-                processingStatus = "Auto-rush terminé avec succès!"
-                
-                // Affichage des suggestions d'amélioration
-                if !result.suggestions.isEmpty {
-                    print("Suggestions d'amélioration:")
-                    for suggestion in result.suggestions {
-                        print("- \(suggestion)")
-                    }
-                }
-            }
+            project.timeline = timeline
+            project.modifiedAt = Date()
+            
+            // Synchroniser avec le moteur de timeline magnétique
+            syncToTimelineEngine()
+            
+            // Génération des thumbnails
+            await generateThumbnails()
+            
+            let compressionRatio = Float(timeline.count) / Float(max(previewSegments.count, 1))
+            processingStatus = "Auto-rush terminé! (\(timeline.count) segments, compression: \(Int(compressionRatio * 100))%)"
             
         } catch {
             print("Failed to perform auto-rush: \(error)")
@@ -232,27 +239,32 @@ class ProjectViewModel: ObservableObject {
         guard let audioURL = audioURL else { return }
         
         do {
-            detailedAudioAnalysis = try await audioAnalysisEngine.analyzeAudio(from: audioURL)
+            // Utilisation du Neural Adapter pour analyse temps réel
+            detailedAudioAnalysis = try await neuralAdapter.analyzeAudio(url: audioURL)
         } catch {
             print("Real-time audio analysis failed: \(error)")
         }
     }
     
     func generateSmartCutsOnly() async {
-        guard let detailedAnalysis = detailedAudioAnalysis, !previewSegments.isEmpty else {
-            processingStatus = "Analyse audio et segments vidéo requis"
+        guard !videoURLs.isEmpty else {
+            processingStatus = "Vidéos requises pour générer les coupes intelligentes"
             return
         }
         
         isProcessing = true
-        processingStatus = "Génération des coupes intelligentes..."
+        processingStatus = "Coupes intelligentes (Neural Engine)..."
         
         do {
-            let smartCuts = try await smartCutEngine.generateSmartCuts(
-                for: previewSegments,
-                with: detailedAnalysis,
-                targetDuration: selectedPlatform.idealDuration,
-                platform: selectedPlatform
+            // Configuration optimisée pour smart cuts
+            let smartCuts = try await neuralAdapter.processVideo(
+                url: videoURLs[0],
+                silenceThreshold: -40.0,  // Plus agressif
+                minSilenceDuration: 0.3,
+                paddingBefore: 0.1,
+                paddingAfter: 0.15,
+                enableBeatSync: true,
+                enableSceneDetection: true
             )
             
             // Synchroniser avec le moteur de timeline magnétique
@@ -281,18 +293,22 @@ class ProjectViewModel: ObservableObject {
     /// Synchronise les segments du moteur vers le projet
     func syncFromTimelineEngine() {
         project.timeline = timelineEngine.segments
-        project.modifiedAt = Date()sProcessing = false
-        if processingStatus.contains("Erreur") == false {
-            processingStatus = ""
-        }
+        project.modifiedAt = Date()
     }
     
     // MARK: - Mode Démonstration
     func runDemoMode() async {
         isProcessing = true
-        processingStatus = "Initialisation du mode démo..."
+        processingStatus = "Mode démo désactivé - veuillez importer de vraies vidéos"
         
-        // Simulation de fichiers vidéo et audio
+        // Mode démo désactivé car nécessite des fichiers réels
+        // Pour tester, utilisez "Importer Vidéos" et "Importer Audio"
+        
+        isProcessing = false
+        processingStatus = ""
+        
+        /*
+        // Code original commenté - nécessite des fichiers de démo réels
         let demoVideoURL = URL(fileURLWithPath: "/demo/video1.mp4")
         let demoAudioURL = URL(fileURLWithPath: "/demo/music.mp3")
         
@@ -395,6 +411,7 @@ class ProjectViewModel: ObservableObject {
                 self.processingStatus = ""
             }
         }
+        */
     }
     func updateRushPreferences(
         highlightThreshold: Float? = nil,

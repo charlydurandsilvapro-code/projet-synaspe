@@ -8,6 +8,8 @@ struct VideoPreviewArea: View {
     @State private var isPlaying = false
     @State private var showingControls = true
     @State private var controlsTimer: Timer?
+    @State private var player: AVPlayer?
+    @State private var timeObserver: Any?
     
     var body: some View {
         GeometryReader { geometry in
@@ -39,12 +41,13 @@ struct VideoPreviewArea: View {
                 } else {
                     // Video Preview
                     ZStack {
-                        // Mock Video Player
-                        MockVideoPlayerView(
-                            segments: viewModel.project.timeline,
-                            currentTime: $currentTime,
-                            isPlaying: $isPlaying
-                        )
+                        // VRAI LECTEUR VIDÉO
+                        if let player = player {
+                            AVPlayerViewWrapper(player: player)
+                        } else {
+                            ProgressView("Chargement de la vidéo...")
+                                .foregroundStyle(.white)
+                        }
                         
                         // Overlay Controls
                         if showingControls {
@@ -81,10 +84,97 @@ struct VideoPreviewArea: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 12))
+        .onAppear {
+            setupPlayer()
+        }
+        .onChange(of: viewModel.project.timeline) { _ in
+            setupPlayer()
+        }
+        .onChange(of: isPlaying) { playing in
+            if playing {
+                player?.play()
+            } else {
+                player?.pause()
+            }
+        }
+        .onDisappear {
+            cleanupPlayer()
+        }
     }
     
     private var totalDuration: Double {
         viewModel.project.timeline.reduce(0) { $0 + $1.timeRange.duration.seconds }
+    }
+    
+    // MARK: - Vrai Player avec Composition
+    private func setupPlayer() {
+        cleanupPlayer()
+        
+        guard !viewModel.project.timeline.isEmpty else { return }
+        
+        // Créer composition à partir des segments
+        let composition = AVMutableComposition()
+        
+        guard let videoTrack = composition.addMutableTrack(
+            withMediaType: .video,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        ),
+        let audioTrack = composition.addMutableTrack(
+            withMediaType: .audio,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        ) else { return }
+        
+        var currentTime = CMTime.zero
+        
+        for segment in viewModel.project.timeline {
+            let asset = AVAsset(url: segment.sourceURL)
+            
+            // Charger les pistes de manière asynchrone
+            Task {
+                guard let sourceVideoTrack = try? await asset.loadTracks(withMediaType: .video).first,
+                      let sourceAudioTrack = try? await asset.loadTracks(withMediaType: .audio).first else {
+                    return
+                }
+            
+                do {
+                    try videoTrack.insertTimeRange(
+                        segment.timeRange,
+                        of: sourceVideoTrack,
+                        at: currentTime
+                    )
+                    try audioTrack.insertTimeRange(
+                        segment.timeRange,
+                        of: sourceAudioTrack,
+                        at: currentTime
+                    )
+                    currentTime = CMTimeAdd(currentTime, segment.timeRange.duration)
+                } catch {
+                    print("Éreur insertion segment: \(error)")
+                }
+            }
+        }
+        
+        // Créer player avec composition
+        let playerItem = AVPlayerItem(asset: composition)
+        let newPlayer = AVPlayer(playerItem: playerItem)
+        self.player = newPlayer
+        
+        // Observer le temps
+        let interval = CMTime(seconds: 0.1, preferredTimescale: 600)
+        timeObserver = newPlayer.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
+            DispatchQueue.main.async {
+                self.currentTime = time.seconds
+            }
+        }
+    }
+    
+    private func cleanupPlayer() {
+        if let observer = timeObserver {
+            player?.removeTimeObserver(observer)
+            timeObserver = nil
+        }
+        player?.pause()
+        player = nil
     }
     
     private func showControls() {

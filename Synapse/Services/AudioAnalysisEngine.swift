@@ -3,6 +3,7 @@ import AVFoundation
 import CoreMedia
 
 @available(macOS 14.0, *)
+@MainActor
 class SimplifiedAudioAnalysisEngine: ObservableObject {
     
     @Published var isProcessing: Bool = false

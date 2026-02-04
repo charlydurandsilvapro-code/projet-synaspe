@@ -4,6 +4,7 @@ import CoreMedia
 import Accelerate
 
 @available(macOS 14.0, *)
+@MainActor
 class AutoDerushEngine: ObservableObject {
     
     // MARK: - Configuration
@@ -50,64 +51,119 @@ class AutoDerushEngine: ObservableObject {
         
         isProcessing = true
         progress = 0.0
-        defer { 
-            isProcessing = false 
-            progress = 1.0
-        }
-        
         currentTask = "Analyse audio de la vidéo..."
         
-        // 1. Extraction et analyse audio
-        let audioAnalysis = try await analyzeVideoAudio(videoURL)
-        progress = 0.3
+        // Isolation des tâches lourdes pour ne pas bloquer l'UI
+        let result = try await Task.detached(priority: .userInitiated) {
+            // 1. Extraction et analyse audio
+            let audioAnalysis = try await self.analyzeVideoAudioIsolated(videoURL)
+            
+            await MainActor.run {
+                self.progress = 0.3
+                self.currentTask = "Détection des zones de parole..."
+            }
+            
+            // 2. Détection des segments de parole et silences
+            let speechSegments = self.detectSpeechSegmentsIsolated(audioAnalysis, speed: speed)
+            
+            await MainActor.run {
+                self.progress = 0.6
+                self.currentTask = "Génération des points de coupe..."
+            }
+            
+            // 3. Génération des coupes basées sur les silences
+            let cutPoints = self.generateCutPointsIsolated(
+                speechSegments: speechSegments,
+                speed: speed,
+                minDuration: preserveMinDuration
+            )
+            
+            await MainActor.run {
+                self.progress = 0.8
+                self.currentTask = "Création de la timeline dérushée..."
+            }
+            
+            // 4. Création des segments vidéo dérushés
+            let derushSegments = try await self.createDerushSegmentsIsolated(
+                videoURL: videoURL,
+                cutPoints: cutPoints
+            )
+            
+            await MainActor.run {
+                self.currentTask = "Finalisation..."
+            }
+            
+            // 5. Calcul des statistiques
+            let originalDuration = try await self.getVideoDurationIsolated(videoURL)
+            let derushDuration = derushSegments.reduce(0) { $0 + $1.duration }
+            let compressionRatio = derushDuration / originalDuration
+            
+            // 6. Sous-échantillonnage audio pour waveform (1 point tous les 100 samples)
+            let audioSamples = audioAnalysis.samples.enumerated()
+                .compactMap { index, sample in index % 100 == 0 ? sample : nil }
+            
+            // 7. Création composition preview (segments conservés uniquement)
+            let previewComp = try? await self.createPreviewComposition(
+                videoURL: videoURL,
+                derushSegments: derushSegments
+            )
+            
+            return DerushResult(
+                originalURL: videoURL,
+                derushSegments: derushSegments,
+                cutPoints: cutPoints,
+                speechSegments: speechSegments,
+                originalDuration: originalDuration,
+                derushDuration: derushDuration,
+                compressionRatio: compressionRatio,
+                speed: speed,
+                segmentsRemoved: cutPoints.count,
+                silenceRemoved: originalDuration - derushDuration,
+                audioSamples: audioSamples,
+                previewComposition: previewComp
+            )
+        }.value
         
-        currentTask = "Détection des zones de parole..."
+        isProcessing = false
+        progress = 1.0
         
-        // 2. Détection des segments de parole et silences
-        let speechSegments = detectSpeechSegments(audioAnalysis, speed: speed)
-        progress = 0.6
-        
-        currentTask = "Génération des points de coupe..."
-        
-        // 3. Génération des coupes basées sur les silences
-        let cutPoints = generateCutPoints(
-            speechSegments: speechSegments,
-            speed: speed,
-            minDuration: preserveMinDuration
-        )
-        progress = 0.8
-        
-        currentTask = "Création de la timeline dérushée..."
-        
-        // 4. Création des segments vidéo dérushés
-        let derushSegments = try await createDerushSegments(
-            videoURL: videoURL,
-            cutPoints: cutPoints
-        )
-        
-        currentTask = "Finalisation..."
-        
-        // 5. Calcul des statistiques
-        let originalDuration = try await getVideoDuration(videoURL)
-        let derushDuration = derushSegments.reduce(0) { $0 + $1.duration }
-        let compressionRatio = derushDuration / originalDuration
-        
-        return DerushResult(
-            originalURL: videoURL,
-            derushSegments: derushSegments,
-            cutPoints: cutPoints,
-            speechSegments: speechSegments,
-            originalDuration: originalDuration,
-            derushDuration: derushDuration,
-            compressionRatio: compressionRatio,
-            speed: speed,
-            segmentsRemoved: cutPoints.count,
-            silenceRemoved: originalDuration - derushDuration
-        )
+        return result
+    }
+    
+    // MARK: - Isolated Analysis Methods (sans @MainActor)
+    
+    private nonisolated func analyzeVideoAudioIsolated(_ videoURL: URL) async throws -> AudioAnalysisData {
+        return try await analyzeVideoAudio(videoURL)
+    }
+    
+    private nonisolated func detectSpeechSegmentsIsolated(
+        _ audioData: AudioAnalysisData,
+        speed: DerushSpeed
+    ) -> [SpeechSegment] {
+        return detectSpeechSegments(audioData, speed: speed)
+    }
+    
+    private nonisolated func generateCutPointsIsolated(
+        speechSegments: [SpeechSegment],
+        speed: DerushSpeed,
+        minDuration: TimeInterval
+    ) -> [DerushCutPoint] {
+        return generateCutPoints(speechSegments: speechSegments, speed: speed, minDuration: minDuration)
+    }
+    
+    private nonisolated func createDerushSegmentsIsolated(
+        videoURL: URL,
+        cutPoints: [DerushCutPoint]
+    ) async throws -> [DerushSegment] {
+        return try await createDerushSegments(videoURL: videoURL, cutPoints: cutPoints)
+    }
+    
+    private nonisolated func getVideoDurationIsolated(_ videoURL: URL) async throws -> TimeInterval {
+        return try await getVideoDuration(videoURL)
     }
     
     // MARK: - Audio Analysis
-    private func analyzeVideoAudio(_ videoURL: URL) async throws -> AudioAnalysisData {
+    private nonisolated func analyzeVideoAudio(_ videoURL: URL) async throws -> AudioAnalysisData {
         let asset = AVAsset(url: videoURL)
         
         guard let audioTrack = try await asset.loadTracks(withMediaType: .audio).first else {
@@ -162,7 +218,7 @@ class AutoDerushEngine: ObservableObject {
     }
     
     // MARK: - Speech Detection
-    private func detectSpeechSegments(
+    private nonisolated func detectSpeechSegments(
         _ audioData: AudioAnalysisData,
         speed: DerushSpeed
     ) -> [SpeechSegment] {
@@ -216,7 +272,7 @@ class AutoDerushEngine: ObservableObject {
     }
     
     // MARK: - Cut Point Generation
-    private func generateCutPoints(
+    private nonisolated func generateCutPoints(
         speechSegments: [SpeechSegment],
         speed: DerushSpeed,
         minDuration: TimeInterval
@@ -258,7 +314,7 @@ class AutoDerushEngine: ObservableObject {
     }
     
     // MARK: - Segment Creation
-    private func createDerushSegments(
+    private nonisolated func createDerushSegments(
         videoURL: URL,
         cutPoints: [DerushCutPoint]
     ) async throws -> [DerushSegment] {
@@ -335,66 +391,69 @@ class AutoDerushEngine: ObservableObject {
     func exportDerushVideo(_ result: DerushResult, outputURL: URL) async throws {
         currentTask = "Export de la vidéo dérushée..."
         isProcessing = true
-        defer { isProcessing = false }
         
-        let keptSegments = result.derushSegments.filter { $0.type == .kept }
-        
-        // Création de la composition vidéo
-        let composition = AVMutableComposition()
-        
-        guard let videoTrack = composition.addMutableTrack(
-            withMediaType: .video,
-            preferredTrackID: kCMPersistentTrackID_Invalid
-        ) else {
-            throw DerushError.exportFailed
-        }
-        
-        guard let audioTrack = composition.addMutableTrack(
-            withMediaType: .audio,
-            preferredTrackID: kCMPersistentTrackID_Invalid
-        ) else {
-            throw DerushError.exportFailed
-        }
-        
-        let asset = AVAsset(url: result.originalURL)
-        guard let sourceVideoTrack = try await asset.loadTracks(withMediaType: .video).first,
-              let sourceAudioTrack = try await asset.loadTracks(withMediaType: .audio).first else {
-            throw DerushError.exportFailed
-        }
-        
-        var insertTime = CMTime.zero
-        
-        for segment in keptSegments {
-            let startTime = CMTime(seconds: segment.originalStartTime, preferredTimescale: 600)
-            let duration = CMTime(seconds: segment.duration, preferredTimescale: 600)
-            let timeRange = CMTimeRangeMake(start: startTime, duration: duration)
+        try await Task.detached(priority: .userInitiated) {
+            let keptSegments = result.derushSegments.filter { $0.type == .kept }
             
-            try videoTrack.insertTimeRange(timeRange, of: sourceVideoTrack, at: insertTime)
-            try audioTrack.insertTimeRange(timeRange, of: sourceAudioTrack, at: insertTime)
+            // Création de la composition vidéo
+            let composition = AVMutableComposition()
             
-            insertTime = CMTimeAdd(insertTime, duration)
-        }
+            guard let videoTrack = composition.addMutableTrack(
+                withMediaType: .video,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+            ) else {
+                throw DerushError.exportFailed
+            }
+            
+            guard let audioTrack = composition.addMutableTrack(
+                withMediaType: .audio,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+            ) else {
+                throw DerushError.exportFailed
+            }
+            
+            let asset = AVAsset(url: result.originalURL)
+            guard let sourceVideoTrack = try await asset.loadTracks(withMediaType: .video).first,
+                  let sourceAudioTrack = try await asset.loadTracks(withMediaType: .audio).first else {
+                throw DerushError.exportFailed
+            }
+            
+            var insertTime = CMTime.zero
+            
+            for segment in keptSegments {
+                let startTime = CMTime(seconds: segment.originalStartTime, preferredTimescale: 600)
+                let duration = CMTime(seconds: segment.duration, preferredTimescale: 600)
+                let timeRange = CMTimeRangeMake(start: startTime, duration: duration)
+                
+                try videoTrack.insertTimeRange(timeRange, of: sourceVideoTrack, at: insertTime)
+                try audioTrack.insertTimeRange(timeRange, of: sourceAudioTrack, at: insertTime)
+                
+                insertTime = CMTimeAdd(insertTime, duration)
+            }
+            
+            // Export
+            guard let exportSession = AVAssetExportSession(
+                asset: composition,
+                presetName: AVAssetExportPresetHighestQuality
+            ) else {
+                throw DerushError.exportFailed
+            }
+            
+            exportSession.outputURL = outputURL
+            exportSession.outputFileType = .mp4
+            
+            await exportSession.export()
+            
+            if exportSession.status != .completed {
+                throw DerushError.exportFailed
+            }
+        }.value
         
-        // Export
-        guard let exportSession = AVAssetExportSession(
-            asset: composition,
-            presetName: AVAssetExportPresetHighestQuality
-        ) else {
-            throw DerushError.exportFailed
-        }
-        
-        exportSession.outputURL = outputURL
-        exportSession.outputFileType = .mp4
-        
-        await exportSession.export()
-        
-        if exportSession.status != .completed {
-            throw DerushError.exportFailed
-        }
+        isProcessing = false
     }
     
     // MARK: - Helper Methods
-    private func extractFloatSamples(from sampleBuffer: CMSampleBuffer) -> [Float] {
+    private nonisolated func extractFloatSamples(from sampleBuffer: CMSampleBuffer) -> [Float] {
         guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return [] }
         
         let length = CMBlockBufferGetDataLength(blockBuffer)
@@ -407,29 +466,29 @@ class AutoDerushEngine: ObservableObject {
         return int16Samples.map { Float($0) / Float(Int16.max) }
     }
     
-    private func calculateRMS(_ samples: [Float]) -> Float {
+    private nonisolated func calculateRMS(_ samples: [Float]) -> Float {
         let sumOfSquares = samples.reduce(0) { $0 + $1 * $1 }
         return sqrt(sumOfSquares / Float(samples.count))
     }
     
-    private func calculateSpeechConfidence(_ dbLevel: Float) -> Float {
+    private nonisolated func calculateSpeechConfidence(_ dbLevel: Float) -> Float {
         // Confiance basée sur le niveau audio
         let normalizedLevel = max(0, min(1, (dbLevel - silenceThreshold) / (speechThreshold - silenceThreshold)))
         return normalizedLevel
     }
     
-    private func calculateAverageSilenceLevel(start: TimeInterval, end: TimeInterval) -> Float {
+    private nonisolated func calculateAverageSilenceLevel(start: TimeInterval, end: TimeInterval) -> Float {
         // Simulation du niveau de silence moyen
         return Float.random(in: -50.0...(-40.0))
     }
     
-    private func getVideoDuration(_ url: URL) async throws -> TimeInterval {
+    private nonisolated func getVideoDuration(_ url: URL) async throws -> TimeInterval {
         let asset = AVAsset(url: url)
         let duration = try await asset.load(.duration)
         return duration.seconds
     }
     
-    private func generateFCPXML(segments: [DerushSegment], originalURL: URL, projectName: String) -> String {
+    private nonisolated func generateFCPXML(segments: [DerushSegment], originalURL: URL, projectName: String) -> String {
         _ = "25"
         let timecode = "00:00:00:00"
         
@@ -476,8 +535,48 @@ class AutoDerushEngine: ObservableObject {
         return xml
     }
     
-    private func formatTime(_ seconds: TimeInterval) -> String {
+    private nonisolated func formatTime(_ seconds: TimeInterval) -> String {
         return "\(Int(seconds * 2500))/2500s"
+    }
+    
+    // MARK: - Preview Composition
+    private nonisolated func createPreviewComposition(
+        videoURL: URL,
+        derushSegments: [DerushSegment]
+    ) async throws -> AVMutableComposition {
+        let composition = AVMutableComposition()
+        
+        guard let videoTrack = composition.addMutableTrack(
+            withMediaType: .video,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        ),
+        let audioTrack = composition.addMutableTrack(
+            withMediaType: .audio,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        ) else {
+            throw DerushError.exportFailed
+        }
+        
+        let asset = AVAsset(url: videoURL)
+        guard let sourceVideoTrack = try await asset.loadTracks(withMediaType: .video).first,
+              let sourceAudioTrack = try await asset.loadTracks(withMediaType: .audio).first else {
+            throw DerushError.noAudioTrack
+        }
+        
+        var currentTime = CMTime.zero
+        
+        for segment in derushSegments where segment.type == .kept {
+            let startTime = CMTime(seconds: segment.originalStartTime, preferredTimescale: 600)
+            let duration = CMTime(seconds: segment.duration, preferredTimescale: 600)
+            let timeRange = CMTimeRange(start: startTime, duration: duration)
+            
+            try videoTrack.insertTimeRange(timeRange, of: sourceVideoTrack, at: currentTime)
+            try audioTrack.insertTimeRange(timeRange, of: sourceAudioTrack, at: currentTime)
+            
+            currentTime = CMTimeAdd(currentTime, duration)
+        }
+        
+        return composition
     }
 }
 
@@ -508,7 +607,7 @@ struct DerushCutPoint {
     let silenceLevel: Float
 }
 
-struct DerushSegment {
+struct DerushSegment: Equatable {
     let id: UUID
     let originalStartTime: TimeInterval
     let originalEndTime: TimeInterval
@@ -518,13 +617,13 @@ struct DerushSegment {
     let sourceURL: URL
     var removalReason: String?
     
-    enum SegmentType {
+    enum SegmentType: Equatable {
         case kept    // Segment conservé
         case removed // Segment supprimé
     }
 }
 
-struct DerushResult {
+struct DerushResult: Equatable {
     let originalURL: URL
     let derushSegments: [DerushSegment]
     let cutPoints: [DerushCutPoint]
@@ -535,6 +634,14 @@ struct DerushResult {
     let speed: AutoDerushEngine.DerushSpeed
     let segmentsRemoved: Int
     let silenceRemoved: TimeInterval
+    let audioSamples: [Float]
+    let previewComposition: AVMutableComposition?
+    
+    static func == (lhs: DerushResult, rhs: DerushResult) -> Bool {
+        lhs.originalURL == rhs.originalURL &&
+        lhs.derushSegments.count == rhs.derushSegments.count &&
+        lhs.originalDuration == rhs.originalDuration
+    }
 }
 
 enum DerushError: Error {

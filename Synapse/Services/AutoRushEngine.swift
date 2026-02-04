@@ -3,6 +3,7 @@ import AVFoundation
 import CoreMedia
 
 @available(macOS 14.0, *)
+@MainActor
 class SimplifiedAutoRushEngine: ObservableObject {
     
     // MARK: - Dependencies

@@ -277,18 +277,3 @@ extension TimelineEngine {
     }
 }
 
-// MARK: - VideoSegment Extension for Mutability
-
-extension VideoSegment {
-    /// Crée une copie modifiable du segment
-    mutating func updateTimeRange(_ newRange: CMTimeRange) {
-        self = VideoSegment(
-            id: self.id,
-            sourceURL: self.sourceURL,
-            timeRange: newRange,
-            qualityScore: self.qualityScore,
-            tags: self.tags,
-            saliencyCenter: self.saliencyCenter
-        )
-    }
-}

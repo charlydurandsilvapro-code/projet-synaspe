@@ -2,10 +2,10 @@ import Foundation
 import CoreMedia
 import CoreGraphics
 
-struct VideoSegment: Identifiable, Codable {
+struct VideoSegment: Identifiable, Codable, Hashable {
     let id: UUID
     let sourceURL: URL
-    let timeRange: CMTimeRange
+    var timeRange: CMTimeRange  // Maintenant mutable pour permettre le trim
     let qualityScore: Float
     let tags: [String]
     let saliencyCenter: CGPoint
@@ -23,6 +23,18 @@ struct VideoSegment: Identifiable, Codable {
         self.tags = tags
         self.saliencyCenter = saliencyCenter
     }
+    
+    // MARK: - Hashable
+    
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+    
+    static func == (lhs: VideoSegment, rhs: VideoSegment) -> Bool {
+        lhs.id == rhs.id
+    }
+    
+    // MARK: - Codable
     
     enum CodingKeys: String, CodingKey {
         case id, sourceURL, qualityScore, tags, saliencyCenter
@@ -52,5 +64,29 @@ struct VideoSegment: Identifiable, Codable {
         try container.encode(saliencyCenter, forKey: .saliencyCenter)
         try container.encode(timeRange.start.seconds, forKey: .timeRangeStart)
         try container.encode(timeRange.duration.seconds, forKey: .timeRangeDuration)
+    }
+    
+    // MARK: - Helper Methods
+    
+    /// Crée une copie avec une nouvelle durée (pour trim)
+    func withTimeRange(_ newRange: CMTimeRange) -> VideoSegment {
+        VideoSegment(
+            id: self.id,
+            sourceURL: self.sourceURL,
+            timeRange: newRange,
+            qualityScore: self.qualityScore,
+            tags: self.tags,
+            saliencyCenter: self.saliencyCenter
+        )
+    }
+    
+    /// Durée en secondes (helper)
+    var duration: TimeInterval {
+        timeRange.duration.seconds
+    }
+    
+    /// Position de début en secondes (helper)
+    var startTime: TimeInterval {
+        timeRange.start.seconds
     }
 }

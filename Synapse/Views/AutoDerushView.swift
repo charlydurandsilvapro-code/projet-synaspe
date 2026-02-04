@@ -13,6 +13,8 @@ struct AutoDerushView: View {
     @State private var exportType: ExportType = .video
     @State private var playheadPosition: TimeInterval = 0
     @State private var isPlaying = false
+    @State private var player: AVPlayer?
+    @State private var timeObserver: Any?
     
     enum ExportType {
         case video, fcpxml, timeline
@@ -50,12 +52,21 @@ struct AutoDerushView: View {
                         engine: derushEngine
                     )
                 } else if let result = derushResult {
-                    // Vue de résultat avec timeline
-                    DerushTimelineView(
-                        result: result,
-                        playheadPosition: $playheadPosition,
-                        isPlaying: $isPlaying
-                    )
+                    // Vue de résultat avec timeline + VRAI PLAYER
+                    VStack(spacing: 0) {
+                        // LECTEUR VIDÉO PREVIEW (avec composition dérushée)
+                        if let player = player {
+                            AVPlayerViewWrapper(player: player)
+                                .frame(height: 300)
+                        }
+                        
+                        // Timeline
+                        DerushTimelineView(
+                            result: result,
+                            playheadPosition: $playheadPosition,
+                            isPlaying: $isPlaying
+                        )
+                    }
                 } else {
                     // Vue d'accueil
                     DerushWelcomeView(
@@ -65,6 +76,19 @@ struct AutoDerushView: View {
             }
         }
         .navigationTitle("Auto-Dérush Synapse")
+        .onChange(of: derushResult) { result in
+            setupPreviewPlayer(result: result)
+        }
+        .onChange(of: isPlaying) { playing in
+            if playing {
+                player?.play()
+            } else {
+                player?.pause()
+            }
+        }
+        .onDisappear {
+            cleanupPlayer()
+        }
         .fileImporter(
             isPresented: $showingVideoPicker,
             allowedContentTypes: [.movie],
@@ -110,6 +134,34 @@ struct AutoDerushView: View {
                 print("Dérush failed: \(error)")
             }
         }
+    }
+    
+    // MARK: - Player Management
+    private func setupPreviewPlayer(result: DerushResult?) {
+        cleanupPlayer()
+        
+        guard let result = result,
+              let composition = result.previewComposition else { return }
+        
+        let playerItem = AVPlayerItem(asset: composition)
+        let newPlayer = AVPlayer(playerItem: playerItem)
+        self.player = newPlayer
+        
+        let interval = CMTime(seconds: 0.1, preferredTimescale: 600)
+        timeObserver = newPlayer.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
+            DispatchQueue.main.async {
+                self.playheadPosition = time.seconds
+            }
+        }
+    }
+    
+    private func cleanupPlayer() {
+        if let observer = timeObserver {
+            player?.removeTimeObserver(observer)
+            timeObserver = nil
+        }
+        player?.pause()
+        player = nil
     }
     
     private func createExportDocument() -> TextDocument {
@@ -472,7 +524,8 @@ struct DerushTimelineView: View {
                         segments: result.derushSegments,
                         showRemoved: true,
                         scale: timelineScale,
-                        playheadPosition: playheadPosition
+                        playheadPosition: playheadPosition,
+                        audioSamples: result.audioSamples
                     )
                     
                     // Timeline dérushée
@@ -481,7 +534,8 @@ struct DerushTimelineView: View {
                         segments: result.derushSegments.filter { $0.type == .kept },
                         showRemoved: false,
                         scale: timelineScale,
-                        playheadPosition: playheadPosition
+                        playheadPosition: playheadPosition,
+                        audioSamples: result.audioSamples
                     )
                 }
                 .padding()
@@ -670,6 +724,7 @@ struct DerushTrackView: View {
     let showRemoved: Bool
     let scale: CGFloat
     let playheadPosition: TimeInterval
+    let audioSamples: [Float]
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -689,7 +744,8 @@ struct DerushTrackView: View {
                         DerushSegmentView(
                             segment: segment,
                             scale: scale,
-                            showRemoved: showRemoved
+                            showRemoved: showRemoved,
+                            audioSamples: extractAudioSamplesForSegment(segment)
                         )
                     }
                 }
@@ -705,6 +761,27 @@ struct DerushTrackView: View {
             }
         }
     }
+    
+    // Extrait les samples audio correspondant au segment
+    private func extractAudioSamplesForSegment(_ segment: DerushSegment) -> [Float] {
+        guard !audioSamples.isEmpty else { return [] }
+        
+        // Calculer les indices dans le tableau audioSamples
+        // audioSamples est sous-échantillonné (1 point tous les 100 samples)
+        let totalDuration = segments.reduce(0.0) { $0 + $1.duration }
+        guard totalDuration > 0 else { return [] }
+        
+        let startRatio = segment.originalStartTime / totalDuration
+        let endRatio = segment.originalEndTime / totalDuration
+        
+        let startIndex = Int(startRatio * Double(audioSamples.count))
+        let endIndex = Int(endRatio * Double(audioSamples.count))
+        
+        let clampedStart = max(0, min(startIndex, audioSamples.count))
+        let clampedEnd = max(clampedStart, min(endIndex, audioSamples.count))
+        
+        return Array(audioSamples[clampedStart..<clampedEnd])
+    }
 }
 
 @available(macOS 14.0, *)
@@ -712,32 +789,46 @@ struct DerushSegmentView: View {
     let segment: DerushSegment
     let scale: CGFloat
     let showRemoved: Bool
+    let audioSamples: [Float]
     
     var body: some View {
         let width = CGFloat(segment.duration * scale * 50)
         
-        RoundedRectangle(cornerRadius: 4)
-            .fill(segmentColor)
-            .frame(width: max(width, 2), height: 70)
-            .overlay(
-                VStack(spacing: 2) {
-                    if width > 60 {
-                        Text(formatDuration(segment.duration))
+        ZStack {
+            // Waveform réelle en arrière-plan
+            if !audioSamples.isEmpty {
+                WaveformShape(samples: audioSamples)
+                    .stroke(segmentColor.opacity(0.8), lineWidth: 1.5)
+                    .background(segmentColor.opacity(0.2))
+            } else {
+                // Fallback si pas d'audio samples
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(segmentColor.opacity(0.3))
+            }
+            
+            // Texte overlay
+            VStack(spacing: 2) {
+                if width > 60 {
+                    Text(formatDuration(segment.duration))
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.5), radius: 2)
+                    
+                    if segment.type == .removed, let reason = segment.removalReason {
+                        Text(reason)
                             .font(.caption2)
-                            .fontWeight(.medium)
-                            .foregroundStyle(.white)
-                        
-                        if segment.type == .removed, let reason = segment.removalReason {
-                            Text(reason)
-                                .font(.caption2)
-                                .foregroundStyle(.white.opacity(0.8))
-                                .lineLimit(2)
-                        }
+                            .foregroundStyle(.white.opacity(0.8))
+                            .shadow(color: .black.opacity(0.5), radius: 2)
+                            .lineLimit(2)
                     }
                 }
-                .padding(4)
-            )
-            .opacity(segment.type == .removed && !showRemoved ? 0.3 : 1.0)
+            }
+            .padding(4)
+        }
+        .frame(width: max(width, 2), height: 70)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .opacity(segment.type == .removed && !showRemoved ? 0.3 : 1.0)
     }
     
     private var segmentColor: Color {

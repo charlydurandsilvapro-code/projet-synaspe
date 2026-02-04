@@ -3,6 +3,7 @@ import AVFoundation
 import CoreMedia
 
 @available(macOS 14.0, *)
+@MainActor
 class SimplifiedSmartCutEngine: ObservableObject {
     
     @Published var isProcessing: Bool = false
@@ -18,48 +19,50 @@ class SimplifiedSmartCutEngine: ObservableObject {
         
         isProcessing = true
         progress = 0.0
-        defer { 
-            isProcessing = false 
-            progress = 1.0
-        }
         
-        progress = 0.2
-        try await Task.sleep(nanoseconds: 300_000_000) // 0.3 secondes
-        
-        // Tri des segments par qualité
-        let sortedSegments = videoSegments.sorted { $0.qualityScore > $1.qualityScore }
-        
-        progress = 0.5
-        try await Task.sleep(nanoseconds: 200_000_000) // 0.2 secondes
-        
-        // Sélection des meilleurs segments
-        let targetDur = targetDuration ?? platform.idealDuration
-        let maxSegments = min(Int(targetDur / 3.0), sortedSegments.count) // ~3 secondes par segment
-        
-        progress = 0.8
-        
-        var selectedSegments: [VideoSegment] = []
-        var totalDuration: TimeInterval = 0
-        
-        for segment in sortedSegments.prefix(maxSegments) {
-            let segmentDuration = segment.timeRange.duration.seconds
+        let result = try await Task.detached(priority: .userInitiated) {
+            await MainActor.run { self.progress = 0.2 }
+            try await Task.sleep(nanoseconds: 100_000_000) // 0.1 secondes
             
-            if totalDuration + segmentDuration <= targetDur * 1.2 { // 20% de tolérance
-                // Synchronisation avec les beats
-                let syncedSegment = synchronizeWithBeats(segment, audioAnalysis: audioAnalysis)
-                selectedSegments.append(syncedSegment)
-                totalDuration += syncedSegment.timeRange.duration.seconds
+            // Tri des segments par qualité
+            let sortedSegments = videoSegments.sorted { $0.qualityScore > $1.qualityScore }
+            
+            await MainActor.run { self.progress = 0.5 }
+            try await Task.sleep(nanoseconds: 100_000_000)
+            
+            // Sélection des meilleurs segments
+            let targetDur = targetDuration ?? platform.idealDuration
+            let maxSegments = min(Int(targetDur / 3.0), sortedSegments.count)
+            
+            await MainActor.run { self.progress = 0.8 }
+            
+            var selectedSegments: [VideoSegment] = []
+            var totalDuration: TimeInterval = 0
+            
+            for segment in sortedSegments.prefix(maxSegments) {
+                let segmentDuration = segment.timeRange.duration.seconds
                 
-                if totalDuration >= targetDur * 0.9 { // 90% de la durée cible
-                    break
+                if totalDuration + segmentDuration <= targetDur * 1.2 {
+                    let syncedSegment = self.synchronizeWithBeatsIsolated(segment, audioAnalysis: audioAnalysis)
+                    selectedSegments.append(syncedSegment)
+                    totalDuration += syncedSegment.timeRange.duration.seconds
+                    
+                    if totalDuration >= targetDur * 0.9 {
+                        break
+                    }
                 }
             }
-        }
+            
+            return selectedSegments
+        }.value
         
-        return selectedSegments
+        isProcessing = false
+        progress = 1.0
+        
+        return result
     }
     
-    private func synchronizeWithBeats(_ segment: VideoSegment, audioAnalysis: DetailedAudioAnalysis) -> VideoSegment {
+    private nonisolated func synchronizeWithBeatsIsolated(_ segment: VideoSegment, audioAnalysis: DetailedAudioAnalysis) -> VideoSegment {
         let segmentStart = segment.timeRange.start.seconds
         
         // Recherche du beat le plus proche
