@@ -21,9 +21,9 @@ struct WaveformShape: Shape {
         for (index, sample) in samples.enumerated() {
             let x = CGFloat(index) * spacing
             
-            // Normaliser l'amplitude (0-1)
+            // Normaliser et amplifier x5 pour meilleure visibilité
             let normalizedSample = abs(sample)
-            let barHeight = CGFloat(normalizedSample) * (height / 2)
+            let barHeight = CGFloat(normalizedSample) * (height / 2) * 5.0
             
             // Dessiner barre symétrique autour du centre
             path.move(to: CGPoint(x: x, y: midY - barHeight))

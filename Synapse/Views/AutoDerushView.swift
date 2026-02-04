@@ -1,5 +1,31 @@
 import SwiftUI
 import AVKit
+import UniformTypeIdentifiers
+
+// MARK: - FCPXMLDocument (Export type pour Final Cut Pro XML)
+@available(macOS 14.0, *)
+struct FCPXMLDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.xml] }
+    static var writableContentTypes: [UTType] { [.xml] }
+    
+    var xmlContent: String = ""
+    
+    init(xmlContent: String = "") {
+        self.xmlContent = xmlContent
+    }
+    
+    init(configuration: ReadConfiguration) throws {
+        if let data = configuration.file.regularFileContents,
+           let string = String(data: data, encoding: .utf8) {
+            xmlContent = string
+        }
+    }
+    
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        let data = xmlContent.data(using: .utf8) ?? Data()
+        return FileWrapper(regularFileWithContents: data)
+    }
+}
 
 @available(macOS 14.0, *)
 struct AutoDerushView: View {
@@ -7,6 +33,7 @@ struct AutoDerushView: View {
     @State private var selectedVideoURL: URL?
     @State private var derushResult: DerushResult?
     @State private var selectedSpeed: AutoDerushEngine.DerushSpeed = .medium
+    @State private var silenceThreshold: Double = -40.0 // Seuil de silence réglable
     @State private var preserveMinDuration: Double = 0.5
     @State private var showingVideoPicker = false
     @State private var showingExportDialog = false
@@ -26,6 +53,7 @@ struct AutoDerushView: View {
             DerushSidebarView(
                 selectedVideoURL: $selectedVideoURL,
                 selectedSpeed: $selectedSpeed,
+                silenceThreshold: $silenceThreshold,
                 preserveMinDuration: $preserveMinDuration,
                 showingVideoPicker: $showingVideoPicker,
                 onStartDerush: startDerush
@@ -64,7 +92,8 @@ struct AutoDerushView: View {
                         DerushTimelineView(
                             result: result,
                             playheadPosition: $playheadPosition,
-                            isPlaying: $isPlaying
+                            isPlaying: $isPlaying,
+                            onSeek: seekToTime
                         )
                     }
                 } else {
@@ -105,9 +134,9 @@ struct AutoDerushView: View {
         }
         .fileExporter(
             isPresented: $showingExportDialog,
-            document: createExportDocument(),
-            contentType: exportType == .fcpxml ? .xml : .mpeg4Movie,
-            defaultFilename: exportType == .fcpxml ? "derush_project.fcpxml" : "derush_video.mp4"
+            document: FCPXMLDocument(xmlContent: ""),
+            contentType: .xml,
+            defaultFilename: "derush_project.fcpxml"
         ) { result in
             switch result {
             case .success(let url):
@@ -128,6 +157,7 @@ struct AutoDerushView: View {
                 derushResult = try await derushEngine.performAutoDerush(
                     videoURL: videoURL,
                     speed: selectedSpeed,
+                    silenceThreshold: Float(silenceThreshold),
                     preserveMinDuration: preserveMinDuration
                 )
             } catch {
@@ -136,21 +166,60 @@ struct AutoDerushView: View {
         }
     }
     
+    // MARK: - Seek/Scrubbing
+    private func seekToTime(_ time: TimeInterval) {
+        let newTime = max(0, min(time, derushResult?.derushDuration ?? 0)) // Borner le temps
+        playheadPosition = newTime // Mettre à jour l'UI
+        
+        // Mettre à jour le vrai lecteur vidéo
+        let cmTime = CMTime(seconds: newTime, preferredTimescale: 600)
+        player?.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+    
     // MARK: - Player Management
     private func setupPreviewPlayer(result: DerushResult?) {
         cleanupPlayer()
         
-        guard let result = result,
-              let composition = result.previewComposition else { return }
+        guard let result = result else { return }
         
-        let playerItem = AVPlayerItem(asset: composition)
-        let newPlayer = AVPlayer(playerItem: playerItem)
-        self.player = newPlayer
+        // Create composition from kept segments
+        let composition = AVMutableComposition()
+        guard let videoTrack = composition.addMutableTrack(
+            withMediaType: .video,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        ),
+        let audioTrack = composition.addMutableTrack(
+            withMediaType: .audio,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        ) else { return }
         
-        let interval = CMTime(seconds: 0.1, preferredTimescale: 600)
-        timeObserver = newPlayer.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
+        let asset = AVAsset(url: result.originalURL)
+        Task {
+            guard let sourceVideoTrack = try? await asset.loadTracks(withMediaType: .video).first,
+                  let sourceAudioTrack = try? await asset.loadTracks(withMediaType: .audio).first else { return }
+            
+            var currentTime = CMTime.zero
+            
+            for segment in result.derushSegments where segment.type == .kept {
+                let startTime = CMTime(seconds: segment.originalStartTime, preferredTimescale: 600)
+                let duration = CMTime(seconds: segment.duration, preferredTimescale: 600)
+                let timeRange = CMTimeRange(start: startTime, duration: duration)
+                
+                try? videoTrack.insertTimeRange(timeRange, of: sourceVideoTrack, at: currentTime)
+                try? audioTrack.insertTimeRange(timeRange, of: sourceAudioTrack, at: currentTime)
+                
+                currentTime = CMTimeAdd(currentTime, duration)
+            }
+            
             DispatchQueue.main.async {
-                self.playheadPosition = time.seconds
+                let playerItem = AVPlayerItem(asset: composition)
+                let newPlayer = AVPlayer(playerItem: playerItem)
+                self.player = newPlayer
+                
+                let interval = CMTime(seconds: 0.1, preferredTimescale: 600)
+                self.timeObserver = newPlayer.addPeriodicTimeObserver(forInterval: interval, queue: DispatchQueue.main) { time in
+                    self.playheadPosition = time.seconds
+                }
             }
         }
     }
@@ -162,10 +231,6 @@ struct AutoDerushView: View {
         }
         player?.pause()
         player = nil
-    }
-    
-    private func createExportDocument() -> TextDocument {
-        return TextDocument(text: "")
     }
     
     private func handleExport(to url: URL) async {
@@ -187,150 +252,301 @@ struct AutoDerushView: View {
     }
 }
 
-// MARK: - Sidebar
+// MARK: - Sidebar (2026 Modern Design - Optimized for compiler)
 @available(macOS 14.0, *)
 struct DerushSidebarView: View {
     @Binding var selectedVideoURL: URL?
     @Binding var selectedSpeed: AutoDerushEngine.DerushSpeed
+    @Binding var silenceThreshold: Double
     @Binding var preserveMinDuration: Double
     @Binding var showingVideoPicker: Bool
     let onStartDerush: () -> Void
     
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                // Section Vidéo
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Vidéo Source")
-                        .font(.headline)
-                        .foregroundStyle(.primary)
+        ZStack {
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color(red: 0.08, green: 0.08, blue: 0.1),
+                    Color(red: 0.12, green: 0.12, blue: 0.15)
+                ]),
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+            
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    SidebarHeaderView()
                     
-                    if let url = selectedVideoURL {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Image(systemName: "video")
-                                    .foregroundStyle(.blue)
-                                Text(url.lastPathComponent)
-                                    .font(.subheadline)
-                                    .lineLimit(2)
-                                Spacer()
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(.ultraThinMaterial)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                            
-                            Button("Changer de vidéo") {
-                                showingVideoPicker = true
-                            }
-                            .buttonStyle(.plain)
-                            .font(.caption)
-                            .foregroundStyle(.blue)
-                        }
-                    } else {
-                        Button(action: { showingVideoPicker = true }) {
-                            VStack(spacing: 8) {
-                                Image(systemName: "plus.circle")
-                                    .font(.title)
-                                Text("Sélectionner une vidéo")
-                                    .font(.subheadline)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 20)
-                            .background(.ultraThinMaterial)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.blue)
-                    }
+                    Divider().opacity(0.3)
+                    
+                    SidebarVideoSection(
+                        selectedVideoURL: $selectedVideoURL,
+                        showingVideoPicker: $showingVideoPicker
+                    )
+                    
+                    SidebarParametersSection(
+                        selectedSpeed: $selectedSpeed,
+                        silenceThreshold: $silenceThreshold,
+                        preserveMinDuration: $preserveMinDuration
+                    )
+                    
+                    SidebarActionButton(
+                        isEnabled: selectedVideoURL != nil,
+                        onStartDerush: onStartDerush
+                    )
+                    
+                    Spacer()
                 }
-                
-                Divider()
-                
-                // Section Paramètres
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Paramètres de Dérush")
-                        .font(.headline)
-                        .foregroundStyle(.primary)
-                    
-                    // Vitesse de coupe
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Vitesse de Coupe")
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                        
-                        Picker("Vitesse", selection: $selectedSpeed) {
-                            ForEach(AutoDerushEngine.DerushSpeed.allCases, id: \.self) { speed in
-                                Text(speed.rawValue).tag(speed)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        
-                        Text(selectedSpeed.description)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 4)
-                    }
-                    
-                    // Durée minimale
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Durée Min. Segment")
+                .padding(16)
+            }
+        }
+    }
+}
+
+@available(macOS 14.0, *)
+struct SidebarHeaderView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Auto-Dérush", systemImage: "waveform.circle.fill")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(
+                    LinearGradient(
+                        gradient: Gradient(colors: [.purple, .pink]),
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+            Text("Intelligence audio avancée")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 8)
+    }
+}
+
+@available(macOS 14.0, *)
+struct SidebarVideoSection: View {
+    @Binding var selectedVideoURL: URL?
+    @Binding var showingVideoPicker: Bool
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Vidéo Source", systemImage: "film.fill")
+                .font(.headline)
+            
+            if let url = selectedVideoURL {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(url.lastPathComponent)
                                 .font(.subheadline)
                                 .fontWeight(.medium)
-                            
-                            Spacer()
-                            
-                            Text("\(preserveMinDuration, specifier: "%.1f")s")
-                                .font(.caption)
-                                .fontWeight(.medium)
+                                .lineLimit(1)
+                            Text("Prêt pour l'analyse")
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
-                        
-                        Slider(value: $preserveMinDuration, in: 0.2...2.0, step: 0.1)
-                            .accentColor(.purple)
-                        
-                        Text("Durée minimale des segments conservés")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Spacer()
                     }
-                }
-                
-                Divider()
-                
-                // Section Actions
-                VStack(spacing: 12) {
-                    Button(action: onStartDerush) {
+                    
+                    Button(action: { showingVideoPicker = true }) {
                         HStack {
-                            Image(systemName: "scissors")
-                            Text("Démarrer le Dérush")
+                            Image(systemName: "arrow.2.squarepath")
+                            Text("Changer")
                         }
+                        .font(.caption)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(
-                            LinearGradient(
-                                colors: [.purple, .pink],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .padding(.vertical, 6)
+                        .background(Color.white.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
                     }
                     .buttonStyle(.plain)
-                    .disabled(selectedVideoURL == nil)
-                    
-                    Text("Le dérush analysera l'audio pour détecter la parole et supprimer les silences selon vos paramètres.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
+                    .foregroundStyle(.blue)
                 }
-                
-                Spacer()
+            } else {
+                Button(action: { showingVideoPicker = true }) {
+                    VStack(spacing: 12) {
+                        Image(systemName: "plus.circle")
+                            .font(.system(size: 32))
+                        VStack(spacing: 4) {
+                            Text("Importer une vidéo")
+                                .fontWeight(.semibold)
+                            Text("MP4, MOV, etc.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 24)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.white.opacity(0.1), lineWidth: 1.5)
+                            .background(Color.white.opacity(0.02))
+                    )
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.purple)
             }
-            .padding()
         }
-        .background(Color(red: 0.12, green: 0.12, blue: 0.13))
+        .padding(16)
+        .background(Color.white.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+        )
+    }
+}
+
+@available(macOS 14.0, *)
+struct SidebarParametersSection: View {
+    @Binding var selectedSpeed: AutoDerushEngine.DerushSpeed
+    @Binding var silenceThreshold: Double
+    @Binding var preserveMinDuration: Double
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Paramètres de Détection", systemImage: "slider.horizontal.3")
+                .font(.headline)
+            
+            SpeedParameter(selectedSpeed: $selectedSpeed)
+            SensitivityParameter(silenceThreshold: $silenceThreshold)
+            DurationParameter(preserveMinDuration: $preserveMinDuration)
+        }
+        .padding(16)
+        .background(Color.white.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+        )
+    }
+}
+
+struct SpeedParameter: View {
+    @Binding var selectedSpeed: AutoDerushEngine.DerushSpeed
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Agressivité")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                Spacer()
+                Text(selectedSpeed.rawValue)
+                    .font(.caption)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Color.purple.opacity(0.3))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            }
+            Picker("Vitesse", selection: $selectedSpeed) {
+                ForEach(AutoDerushEngine.DerushSpeed.allCases, id: \.self) { speed in
+                    Text(speed.description.prefix(10)).tag(speed)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+    }
+}
+
+struct SensitivityParameter: View {
+    @Binding var silenceThreshold: Double
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Sensibilité")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                Spacer()
+                HStack(spacing: 4) {
+                    Text("\(Int(silenceThreshold))")
+                        .font(.system(.caption, design: .monospaced))
+                    Text("dB")
+                        .font(.caption2)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Color.blue.opacity(0.2))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+            }
+            Slider(value: $silenceThreshold, in: -60...(-10), step: 1)
+                .accentColor(.blue)
+            HStack {
+                Image(systemName: "info.circle")
+                    .font(.caption)
+                Text("Moins sensible = plus de coupures")
+                    .font(.caption2)
+            }
+            .foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct DurationParameter: View {
+    @Binding var preserveMinDuration: Double
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Durée Minimale")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                Spacer()
+                HStack(spacing: 2) {
+                    Text(String(format: "%.1f", preserveMinDuration))
+                        .font(.system(.caption, design: .monospaced))
+                    Text("s")
+                        .font(.caption2)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Color.purple.opacity(0.2))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+            }
+            Slider(value: $preserveMinDuration, in: 0.2...2.0, step: 0.1)
+                .accentColor(.purple)
+        }
+    }
+}
+
+@available(macOS 14.0, *)
+struct SidebarActionButton: View {
+    let isEnabled: Bool
+    let onStartDerush: () -> Void
+    
+    var body: some View {
+        Button(action: onStartDerush) {
+            HStack(spacing: 8) {
+                Image(systemName: "waveform")
+                    .font(.headline)
+                Text("Analyser & Dérush")
+                    .fontWeight(.semibold)
+                Spacer()
+                Image(systemName: "arrow.right")
+                    .font(.caption)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .padding(.horizontal, 16)
+            .background(
+                LinearGradient(
+                    gradient: Gradient(colors: [.purple, .pink]),
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .foregroundStyle(.white)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .shadow(color: Color.purple.opacity(0.4), radius: 8, x: 0, y: 4)
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1.0 : 0.5)
     }
 }
 
@@ -502,6 +718,7 @@ struct DerushTimelineView: View {
     let result: DerushResult
     @Binding var playheadPosition: TimeInterval
     @Binding var isPlaying: Bool
+    var onSeek: (TimeInterval) -> Void
     @State private var timelineScale: CGFloat = 1.0
     
     var body: some View {
@@ -515,30 +732,49 @@ struct DerushTimelineView: View {
             .frame(height: 60)
             .background(.ultraThinMaterial)
             
-            // Timeline
+            // Timeline avec zone tactile interactive
             ScrollView([.horizontal, .vertical]) {
-                VStack(spacing: 16) {
-                    // Timeline originale
-                    DerushTrackView(
-                        title: "Original",
-                        segments: result.derushSegments,
-                        showRemoved: true,
-                        scale: timelineScale,
-                        playheadPosition: playheadPosition,
-                        audioSamples: result.audioSamples
-                    )
+                ZStack(alignment: .leading) {
+                    VStack(spacing: 16) {
+                        // Timeline originale
+                        DerushTrackView(
+                            title: "Original",
+                            segments: result.derushSegments,
+                            showRemoved: true,
+                            scale: timelineScale,
+                            playheadPosition: playheadPosition,
+                            audioSamples: result.audioSamples
+                        )
+                        
+                        // Timeline dérushée
+                        DerushTrackView(
+                            title: "Dérushé",
+                            segments: result.derushSegments.filter { $0.type == .kept },
+                            showRemoved: false,
+                            scale: timelineScale,
+                            playheadPosition: playheadPosition,
+                            audioSamples: result.audioSamples
+                        )
+                    }
+                    .padding()
                     
-                    // Timeline dérushée
-                    DerushTrackView(
-                        title: "Dérushé",
-                        segments: result.derushSegments.filter { $0.type == .kept },
-                        showRemoved: false,
-                        scale: timelineScale,
-                        playheadPosition: playheadPosition,
-                        audioSamples: result.audioSamples
-                    )
+                    // Zone tactile invisible pour le scrubbing
+                    GeometryReader { geometry in
+                        Color.white.opacity(0.001) // Presque transparent mais interactif
+                            .gesture(
+                                DragGesture(minimumDistance: 0)
+                                    .onChanged { value in
+                                        // Calcul de la position : X / (Échelle * 50 pixels/sec)
+                                        let pixelsPerSecond: CGFloat = 50.0 * timelineScale
+                                        let time = value.location.x / pixelsPerSecond
+                                        
+                                        // Appeler la fonction de seek
+                                        onSeek(time)
+                                    }
+                            )
+                    }
                 }
-                .padding()
+                .frame(minWidth: calculateTotalWidth(duration: result.derushDuration))
             }
             .background(Color(red: 0.08, green: 0.08, blue: 0.09))
             
@@ -565,6 +801,11 @@ struct DerushTimelineView: View {
             .padding()
             .background(.ultraThinMaterial)
         }
+    }
+    
+    // Fonction utilitaire pour calculer la largeur totale
+    private func calculateTotalWidth(duration: TimeInterval) -> CGFloat {
+        return CGFloat(duration) * timelineScale * 50.0 + 40 // + padding
     }
 }
 
@@ -732,54 +973,78 @@ struct DerushTrackView: View {
                 .font(.headline)
                 .foregroundStyle(.primary)
             
-            ZStack(alignment: .leading) {
-                // Track background
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.gray.opacity(0.1))
-                    .frame(height: 80)
-                
-                // Segments
-                HStack(spacing: 2) {
-                    ForEach(segments, id: \.id) { segment in
-                        DerushSegmentView(
-                            segment: segment,
-                            scale: scale,
-                            showRemoved: showRemoved,
-                            audioSamples: extractAudioSamplesForSegment(segment)
-                        )
-                    }
+            TrackTimelineArea(
+                segments: segments,
+                showRemoved: showRemoved,
+                scale: scale,
+                playheadPosition: playheadPosition,
+                audioSamples: audioSamples
+            )
+        }
+    }
+}
+
+@available(macOS 14.0, *)
+struct TrackTimelineArea: View {
+    let segments: [DerushSegment]
+    let showRemoved: Bool
+    let scale: CGFloat
+    let playheadPosition: TimeInterval
+    let audioSamples: [Float]
+    
+    var body: some View {
+        ZStack(alignment: .leading) {
+            // Track background
+            RoundedRectangle(cornerRadius: 8)
+                .fill(
+                    LinearGradient(
+                        gradient: Gradient(colors: [
+                            Color(red: 0.15, green: 0.15, blue: 0.17),
+                            Color(red: 0.12, green: 0.12, blue: 0.14)
+                        ]),
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(height: 80)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.white.opacity(0.05), lineWidth: 1)
+                )
+            
+            // Segments
+            HStack(spacing: 2) {
+                ForEach(segments, id: \.id) { segment in
+                    DerushSegmentView(
+                        segment: segment,
+                        scale: scale,
+                        showRemoved: showRemoved,
+                        audioSamples: extractAudioSamplesForSegment(segment)
+                    )
                 }
-                .padding(.horizontal, 4)
-                
-                // Playhead
-                if !showRemoved {
-                    Rectangle()
-                        .fill(.red)
-                        .frame(width: 2, height: 80)
-                        .offset(x: CGFloat(playheadPosition * scale * 50))
-                }
+            }
+            .padding(.horizontal, 4)
+            
+            // Playhead
+            if !showRemoved {
+                Rectangle()
+                    .fill(.red)
+                    .frame(width: 2, height: 80)
+                    .offset(x: CGFloat(playheadPosition * scale * 50))
             }
         }
     }
     
-    // Extrait les samples audio correspondant au segment
     private func extractAudioSamplesForSegment(_ segment: DerushSegment) -> [Float] {
         guard !audioSamples.isEmpty else { return [] }
-        
-        // Calculer les indices dans le tableau audioSamples
-        // audioSamples est sous-échantillonné (1 point tous les 100 samples)
         let totalDuration = segments.reduce(0.0) { $0 + $1.duration }
         guard totalDuration > 0 else { return [] }
-        
         let startRatio = segment.originalStartTime / totalDuration
         let endRatio = segment.originalEndTime / totalDuration
-        
         let startIndex = Int(startRatio * Double(audioSamples.count))
         let endIndex = Int(endRatio * Double(audioSamples.count))
-        
         let clampedStart = max(0, min(startIndex, audioSamples.count))
         let clampedEnd = max(clampedStart, min(endIndex, audioSamples.count))
-        
         return Array(audioSamples[clampedStart..<clampedEnd])
     }
 }
